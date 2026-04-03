@@ -25,7 +25,8 @@ def training(dataset, opt, pipe, args):
         is_6dof=dataset.is_6dof,
         model_type=opt.deform_type,
     )
-    deform.load_weights(dataset.model_path, iteration=args.load_iteration)
+    deform_path = args.deform_path if args.deform_path else dataset.model_path
+    deform.load_weights(deform_path, iteration=args.load_iteration)
 
     # Freeze everything — backbone is never updated
     for p in deform.deform.parameters():
@@ -120,6 +121,8 @@ if __name__ == "__main__":
     # Stage 1 checkpoint to load
     parser.add_argument("--load_iteration", type=int, default=-1,
                         help="Stage 1 checkpoint iteration to load (-1 = latest)")
+    parser.add_argument("--deform_path", type=str, default="",
+                        help="Path to deform weights folder (if separate from model_path)")
 
     # Descriptor
     parser.add_argument("--T", type=int, default=8,
