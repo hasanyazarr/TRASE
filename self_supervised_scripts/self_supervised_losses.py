@@ -105,7 +105,7 @@ def _motion_loss_random(f, trajectories, positions, num_pairs, spatial_radius,
     # Far pairs — always negative
     if far_i.shape[0] >= 2:
         sim_far = (f[far_i] * f[far_j]).sum(dim=-1)
-        far_loss = F.relu(sim_far - margin).mean()
+        far_loss = F.relu(sim_far).mean()
         loss = loss + far_loss
         n_terms += 1
 
