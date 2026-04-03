@@ -60,7 +60,7 @@ def training(dataset, opt, pipe, args):
 
     positions = gaussians._xyz.detach()
 
-    progress = tqdm(range(1, args.iterations + 1), desc="Feature Training")
+    progress = tqdm(range(1, args.feature_iterations + 1), desc="Feature Training")
     for iteration in progress:
 
         # Forward: descriptor → MLP → features
@@ -126,7 +126,7 @@ if __name__ == "__main__":
                         help="Number of trajectory timestamps")
 
     # Training
-    parser.add_argument("--iterations", type=int, default=10000,
+    parser.add_argument("--feature_iterations", type=int, default=10000,
                         help="Number of feature training iterations")
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Learning rate for Segmentation MLP")
