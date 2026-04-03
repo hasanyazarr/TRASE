@@ -28,3 +28,5 @@ dependency/sam_vit_h_4b8939.pth
 __pycache__/
 ## vscode
 .vscode/
+implementation_docs/
+memory/
