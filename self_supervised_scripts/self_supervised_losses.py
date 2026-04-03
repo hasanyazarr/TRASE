@@ -58,31 +58,58 @@ def _contrastive_loss(sim, pos_mask, neg_mask, margin, device):
 def _motion_loss_random(f, trajectories, positions, num_pairs, spatial_radius,
                         tau_pos, tau_neg, margin):
     """
-    Random pair sampling within a spatial radius.
-    Fast but many sampled pairs may be trivially negative.
+    Random pair sampling with guaranteed negatives.
+
+    Near pairs  (dist < spatial_radius): use rigid_score to decide pos/neg.
+    Far pairs   (dist > spatial_radius): guaranteed negatives — objects far
+                apart are almost certainly different, regardless of motion.
+    Half of num_pairs budget goes to near pairs, half to far pairs.
     """
     N = f.shape[0]
     device = f.device
+    half = num_pairs * 2  # half budget (will be trimmed to num_pairs//2 each)
 
-    # Oversample since many pairs will be filtered by spatial_radius
+    # --- Near pairs: rigid score decides ---
     idx_i = torch.randint(0, N, (num_pairs * 4,), device=device)
     idx_j = torch.randint(0, N, (num_pairs * 4,), device=device)
-
-    valid = idx_i != idx_j
+    valid = (idx_i != idx_j)
     dist = torch.norm(positions[idx_i] - positions[idx_j], dim=-1)
-    valid = valid & (dist < spatial_radius)
+    near_mask = valid & (dist < spatial_radius)
+    near_i = idx_i[near_mask][:half]
+    near_j = idx_j[near_mask][:half]
 
-    idx_i = idx_i[valid][:num_pairs]
-    idx_j = idx_j[valid][:num_pairs]
+    # --- Far pairs: guaranteed negatives ---
+    idx_i2 = torch.randint(0, N, (num_pairs * 4,), device=device)
+    idx_j2 = torch.randint(0, N, (num_pairs * 4,), device=device)
+    valid2 = (idx_i2 != idx_j2)
+    dist2 = torch.norm(positions[idx_i2] - positions[idx_j2], dim=-1)
+    far_mask = valid2 & (dist2 > spatial_radius)
+    far_i = idx_i2[far_mask][:half]
+    far_j = idx_j2[far_mask][:half]
 
-    if idx_i.shape[0] < 2:
+    if near_i.shape[0] < 2 and far_i.shape[0] < 2:
         return torch.tensor(0.0, device=device, requires_grad=True)
 
-    rigid_score = _compute_rigid_score(trajectories[idx_i], trajectories[idx_j])
-    sim = (f[idx_i] * f[idx_j]).sum(dim=-1)
+    loss = torch.tensor(0.0, device=device)
+    n_terms = 0
 
-    return _contrastive_loss(sim, rigid_score > tau_pos, rigid_score < tau_neg,
-                             margin, device)
+    # Near pairs
+    if near_i.shape[0] >= 2:
+        rigid_score = _compute_rigid_score(trajectories[near_i], trajectories[near_j])
+        sim_near = (f[near_i] * f[near_j]).sum(dim=-1)
+        near_loss = _contrastive_loss(sim_near, rigid_score > tau_pos,
+                                      rigid_score < tau_neg, margin, device)
+        loss = loss + near_loss
+        n_terms += 1
+
+    # Far pairs — always negative
+    if far_i.shape[0] >= 2:
+        sim_far = (f[far_i] * f[far_j]).sum(dim=-1)
+        far_loss = F.relu(sim_far - margin).mean()
+        loss = loss + far_loss
+        n_terms += 1
+
+    return loss / n_terms
 
 
 def _motion_loss_knn(f, trajectories, positions, K, tau_pos, tau_neg, margin):
