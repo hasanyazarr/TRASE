@@ -10,7 +10,7 @@ from utils.general_utils import safe_state
 
 from self_supervised_scripts.gaussian_descriptor import GaussianDescriptor
 from self_supervised_scripts.segmentation_mlp import SegmentationMLP
-from self_supervised_scripts.self_supervised_losses import motion_affinity_loss, MOTION_SAMPLING_MODES
+from self_supervised_scripts.self_supervised_losses import motion_affinity_loss, spatial_coherence_loss, MOTION_SAMPLING_MODES
 
 
 def training(dataset, opt, pipe, args):
@@ -68,7 +68,7 @@ def training(dataset, opt, pipe, args):
         f = mlp(h)   # [N, 32]
 
         # Motion affinity loss
-        loss = motion_affinity_loss(
+        loss_motion = motion_affinity_loss(
             f=f,
             trajectories=trajectories,
             positions=positions,
@@ -81,14 +81,25 @@ def training(dataset, opt, pipe, args):
             margin=args.margin,
         )
 
+        # Spatial coherence loss
+        loss_spatial = spatial_coherence_loss(
+            f=f,
+            positions=positions,
+            num_pairs=args.num_pairs,
+            spatial_radius=args.spatial_radius,
+            sigma=args.spatial_sigma,
+        )
+
+        loss = loss_motion + args.spatial_weight * loss_spatial
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        progress.set_postfix({"loss": f"{loss.item():.4f}"})
+        progress.set_postfix({"loss": f"{loss.item():.4f}", "mot": f"{loss_motion.item():.4f}", "spa": f"{loss_spatial.item():.4f}"})
 
         if iteration % args.log_interval == 0:
-            print(f"[iter {iteration:05d}] loss={loss.item():.4f}")
+            print(f"[iter {iteration:05d}] loss={loss.item():.4f}  mot={loss_motion.item():.4f}  spa={loss_spatial.item():.4f}")
 
     # ------------------------------------------------------------------
     # 5. Save learned features into Gaussians and write .ply
@@ -151,6 +162,12 @@ if __name__ == "__main__":
                         help="Rigid score threshold for negative pairs")
     parser.add_argument("--margin", type=float, default=0.5,
                         help="Hinge margin for negative pairs")
+
+    # Spatial coherence loss
+    parser.add_argument("--spatial_weight", type=float, default=1.0,
+                        help="Weight for spatial coherence loss (λ)")
+    parser.add_argument("--spatial_sigma", type=float, default=None,
+                        help="Gaussian bandwidth for spatial weights (default: spatial_radius/2)")
 
     args = parser.parse_args(sys.argv[1:])
 

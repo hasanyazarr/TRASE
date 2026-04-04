@@ -146,6 +146,53 @@ def _motion_loss_knn(f, trajectories, positions, K, tau_pos, tau_neg, margin):
 
 
 # ---------------------------------------------------------------------------
+# Spatial coherence loss
+# ---------------------------------------------------------------------------
+
+def spatial_coherence_loss(f, positions, num_pairs, spatial_radius, sigma=None):
+    """
+    Spatially close Gaussians should have similar features.
+
+    w_ij = exp(-d_ij² / 2σ²)  — closer pairs get higher weight.
+    Loss  = Σ w_ij · (1 - cos_sim(f_i, f_j)) / Σ w_ij
+
+    Pure pull loss — relies on motion loss far-pair negatives to prevent collapse.
+
+    Args:
+        f:              [N, 32]  L2-normalized feature vectors
+        positions:      [N, 3]   canonical 3D positions
+        num_pairs:      number of near pairs to sample
+        spatial_radius: max 3D distance between pairs
+        sigma:          Gaussian bandwidth (default: spatial_radius / 2)
+    """
+    N = f.shape[0]
+    device = f.device
+
+    if sigma is None:
+        sigma = spatial_radius * 0.5
+
+    idx_i = torch.randint(0, N, (num_pairs * 4,), device=device)
+    idx_j = torch.randint(0, N, (num_pairs * 4,), device=device)
+    valid = (idx_i != idx_j)
+    dist = torch.norm(positions[idx_i] - positions[idx_j], dim=-1)
+    near_mask = valid & (dist < spatial_radius)
+
+    idx_i = idx_i[near_mask][:num_pairs]
+    idx_j = idx_j[near_mask][:num_pairs]
+
+    if idx_i.shape[0] < 2:
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+    d = torch.norm(positions[idx_i] - positions[idx_j], dim=-1)
+    w = torch.exp(-d ** 2 / (2 * sigma ** 2))
+
+    sim = (f[idx_i] * f[idx_j]).sum(dim=-1)
+    loss = (w * (1.0 - sim)).sum() / w.sum().clamp(min=1e-6)
+
+    return loss
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
