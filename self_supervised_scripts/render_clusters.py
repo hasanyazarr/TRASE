@@ -130,9 +130,10 @@ def main(dataset, opt, pipe, args):
                         is_6dof=dataset.is_6dof,
                         override_color=cluster_colors)
 
+        img_name = os.path.splitext(view.image_name)[0]
         torchvision.utils.save_image(
             result["render"].cpu(),
-            os.path.join(out_dir, f"{idx:05d}.png")
+            os.path.join(out_dir, f"{img_name}.png")
         )
 
     print(f"\nDone. Images saved to: {out_dir}")
