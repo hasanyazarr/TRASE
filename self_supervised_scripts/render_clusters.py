@@ -75,13 +75,35 @@ def main(dataset, opt, pipe, args):
     f_np = normalize(feats.cpu().numpy(), norm='l2')
 
     if args.cluster_method == 'dbscan':
-        print(f"Running DBSCAN (eps={args.dbscan_eps}, min_samples={args.dbscan_min_samples})...")
+        from sklearn.neighbors import NearestNeighbors
+        N = len(f_np)
+        # Subsample for DBSCAN — 1.2M points is too large for exact DBSCAN
+        if N > args.dbscan_subsample:
+            print(f"Subsampling {N} → {args.dbscan_subsample} points for DBSCAN...")
+            idx = np.random.choice(N, args.dbscan_subsample, replace=False)
+            f_sub = f_np[idx]
+        else:
+            idx = np.arange(N)
+            f_sub = f_np
+
+        print(f"Running DBSCAN (eps={args.dbscan_eps}, min_samples={args.dbscan_min_samples}) on {len(f_sub)} points...")
         db = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, metric='euclidean', n_jobs=-1)
-        labels = db.fit_predict(f_np)
-        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-        n_noise = np.sum(labels == -1)
-        print(f"Found {n_clusters} clusters, {n_noise} noise points ({100*n_noise/len(labels):.1f}%)")
-        counts = np.bincount(labels[labels >= 0], minlength=n_clusters)
+        sub_labels = db.fit_predict(f_sub)
+        n_clusters = len(set(sub_labels)) - (1 if -1 in sub_labels else 0)
+        n_noise = np.sum(sub_labels == -1)
+        print(f"Found {n_clusters} clusters, {n_noise} noise points ({100*n_noise/len(sub_labels):.1f}%)")
+
+        # Assign all Gaussians to nearest subsampled point's label
+        if N > args.dbscan_subsample:
+            print("Assigning all Gaussians via nearest neighbor...")
+            nn = NearestNeighbors(n_neighbors=1, metric='euclidean', n_jobs=-1)
+            nn.fit(f_sub)
+            _, nn_idx = nn.kneighbors(f_np)
+            labels = sub_labels[nn_idx[:, 0]]
+        else:
+            labels = sub_labels
+
+        counts = np.bincount(labels[labels >= 0], minlength=max(n_clusters, 1))
         print(f"Cluster sizes: {sorted(counts, reverse=True)}")
         out_suffix = f"dbscan_eps{args.dbscan_eps}_min{args.dbscan_min_samples}"
     else:
@@ -151,6 +173,8 @@ if __name__ == "__main__":
     parser.add_argument("--cluster_method", type=str, default="kmeans", choices=["kmeans", "dbscan"])
     parser.add_argument("--dbscan_eps", type=float, default=0.3)
     parser.add_argument("--dbscan_min_samples", type=int, default=10)
+    parser.add_argument("--dbscan_subsample", type=int, default=100000,
+                        help="Max points to run DBSCAN on; rest assigned via nearest neighbor")
     parser.add_argument("--run_name", type=str, default="",
                         help="Must match the --run_name used during training")
 
