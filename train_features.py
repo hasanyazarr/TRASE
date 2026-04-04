@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 import torch
 from argparse import ArgumentParser
 from tqdm import tqdm
@@ -62,10 +63,13 @@ def training(dataset, opt, pipe, args):
 
     positions = gaussians._xyz.detach()
 
-    # Fixed random projection 32 → 3 for feature rendering (not trained)
+    # Fixed random projection 32 → render_feature_dim for feature rendering (not trained).
+    # renderer only supports 3-channel passes, so we use ceil(D/3) passes and concatenate.
+    D = args.render_feature_dim
+    n_passes = math.ceil(D / 3)
     proj = torch.nn.functional.normalize(
-        torch.randn(32, 3, device='cuda'), dim=0
-    )
+        torch.randn(32, n_passes * 3, device='cuda'), dim=0
+    )  # [32, n_passes*3]
 
     # Background and training views for rendering coherence
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -117,20 +121,28 @@ def training(dataset, opt, pipe, args):
                 rgb_map   = rgb_result["render"].detach()    # [3, H, W]
                 depth_map = rgb_result["depth"].detach()     # [1, H, W]
 
-            # Project features 32→3 (differentiable)
-            f_3 = f @ proj                                   # [N, 3]
-            f_min = f_3.min(dim=0).values
-            f_max = f_3.max(dim=0).values
-            f_3 = (f_3 - f_min) / (f_max - f_min + 1e-6)   # [N, 3] in [0,1]
+            # Project features 32→D via n_passes of 3-channel renders (differentiable).
+            f_proj = f @ proj   # [N, n_passes*3]
+            feat_chunks = []
+            for p in range(n_passes):
+                f_chunk = f_proj[:, p * 3:(p + 1) * 3]              # [N, 3]
+                f_min = f_chunk.min(dim=0).values
+                f_max = f_chunk.max(dim=0).values
+                f_chunk = (f_chunk - f_min) / (f_max - f_min + 1e-6)  # [N, 3] in [0,1]
+                chunk_rendered = gs_render(view, gaussians, pipe, background,
+                                           d_xyz, d_rotation, d_scaling,
+                                           is_6dof=dataset.is_6dof,
+                                           override_color=f_chunk)["render"]   # [3, H, W]
+                feat_chunks.append(chunk_rendered)
 
-            feat_rendered = gs_render(view, gaussians, pipe, background,
-                                      d_xyz, d_rotation, d_scaling,
-                                      is_6dof=dataset.is_6dof,
-                                      override_color=f_3)["render"]   # [3, H, W]
+            feat_rendered = torch.cat(feat_chunks, dim=0)[:D]   # [D, H, W]
 
             loss_render = rendering_coherence_loss(
                 feat_rendered, rgb_map, depth_map,
                 alpha=args.render_alpha, beta=args.render_beta,
+                edge_percentile=args.render_edge_percentile,
+                num_pairs=args.render_num_pairs,
+                margin=args.render_margin,
             )
 
         loss = loss_motion + args.spatial_weight * loss_spatial + args.render_weight * loss_render
@@ -221,6 +233,15 @@ if __name__ == "__main__":
                         help="Edge weight for RGB gradient")
     parser.add_argument("--render_beta", type=float, default=0.5,
                         help="Edge weight for depth gradient")
+    parser.add_argument("--render_feature_dim", type=int, default=3,
+                        help="Dimension of projected features for render loss (must be >= 3; "
+                             "uses ceil(D/3) render passes, so multiples of 3 are most efficient)")
+    parser.add_argument("--render_edge_percentile", type=float, default=0.7,
+                        help="Quantile threshold for edge detection (e.g. 0.7 → top 30%% = edges)")
+    parser.add_argument("--render_num_pairs", type=int, default=2048,
+                        help="Max number of negative/positive pairs per render loss call")
+    parser.add_argument("--render_margin", type=float, default=0.3,
+                        help="Hinge margin for negative pairs in render loss")
 
     args = parser.parse_args(sys.argv[1:])
 

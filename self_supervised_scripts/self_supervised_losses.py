@@ -162,37 +162,108 @@ def _image_gradient(x):
 
 
 def rendering_coherence_loss(feat_map, rgb_map, depth_map=None,
-                              alpha=1.0, beta=0.5):
+                              alpha=1.0, beta=0.5,
+                              edge_percentile=0.7,
+                              num_pairs=2048, margin=0.3):
     """
-    Edge-aware feature smoothness loss on 2D rendered maps.
+    2D boundary-aware contrastive loss on rendered feature maps.
 
-    Smooth regions (low color/depth gradient) → features should be similar.
-    Boundary regions (high gradient) → no penalty, features can differ.
+    Negative pairs: pixel straddling a detected RGB/depth edge → push features apart.
+    Positive pairs: nearby pixels both in smooth region → pull features together.
+
+    The key signal here is the negative pairs — boundary pixels must have different
+    features. Positive pairs complement spatial coherence loss in 2D.
 
     Args:
-        feat_map:  [C, H, W]  rendered feature map  (differentiable, C=3)
-        rgb_map:   [3, H, W]  rendered RGB           (detached)
-        depth_map: [1, H, W]  rendered depth         (detached, optional)
-        alpha:     weight for RGB edge contribution
-        beta:      weight for depth edge contribution
+        feat_map:        [C, H, W]  rendered feature map (differentiable)
+        rgb_map:         [3, H, W]  rendered RGB          (detached)
+        depth_map:       [1, H, W]  rendered depth        (detached, optional)
+        alpha:           weight for RGB gradient in edge detection
+        beta:            weight for depth gradient in edge detection
+        edge_percentile: pixels above this quantile of edge strength are edges
+                         (e.g. 0.7 → top 30% = boundaries, bottom 70% = smooth)
+        num_pairs:       max number of pairs per type (neg / pos)
+        margin:          hinge margin for negative pairs
     """
+    C, H, W = feat_map.shape
     device = feat_map.device
 
-    # --- Edge map ---
+    # --- Edge map [H, W] ---
     edge = alpha * _image_gradient(rgb_map.detach())
     if depth_map is not None:
         edge = edge + beta * _image_gradient(depth_map.detach())
 
-    w = torch.exp(-edge)   # [H, W]  — 1 in smooth regions, ~0 at boundaries
+    # Percentile threshold — robust to scene scale variation
+    threshold = torch.quantile(edge.reshape(-1), edge_percentile)
+    edge_mask = edge > threshold   # [H, W] bool: True = boundary
 
-    # --- Feature gradients ---
-    grad_x = (feat_map[:, :, 1:] - feat_map[:, :, :-1]) ** 2   # [C, H, W-1]
-    grad_y = (feat_map[:, 1:, :] - feat_map[:, :-1, :]) ** 2   # [C, H-1, W]
+    # --- Per-pixel features: [H*W, C], L2-normalized ---
+    feat_flat = feat_map.permute(1, 2, 0).reshape(-1, C)
+    feat_flat = F.normalize(feat_flat, dim=-1)
 
-    loss_x = (w[:, :-1] * grad_x.mean(dim=0)).mean()
-    loss_y = (w[:-1, :] * grad_y.mean(dim=0)).mean()
+    def flat_idx(y, x):
+        return y * W + x
 
-    return (loss_x + loss_y) / 2
+    loss = torch.tensor(0.0, device=device)
+    n_terms = 0
+
+    # -------------------------------------------------------------------
+    # Negative pairs: edge pixel ↔ smooth 4-connected neighbor
+    # Each such pair straddles a boundary → features should differ.
+    # -------------------------------------------------------------------
+    edge_pixels = edge_mask.nonzero()   # [E, 2]  (y, x)
+    if edge_pixels.shape[0] > 0:
+        perm = torch.randperm(edge_pixels.shape[0], device=device)[:num_pairs]
+        ep = edge_pixels[perm]          # [S, 2]
+
+        neg_i_list, neg_j_list = [], []
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            ny = ep[:, 0] + dy
+            nx = ep[:, 1] + dx
+            in_bounds = (ny >= 0) & (ny < H) & (nx >= 0) & (nx < W)
+            ny_v = ny[in_bounds]
+            nx_v = nx[in_bounds]
+            ep_v  = ep[in_bounds]
+            # Neighbor must be in the smooth region (non-edge)
+            is_smooth = ~edge_mask[ny_v, nx_v]
+            if is_smooth.sum() > 0:
+                neg_i_list.append(flat_idx(ep_v[is_smooth, 0], ep_v[is_smooth, 1]))
+                neg_j_list.append(flat_idx(ny_v[is_smooth], nx_v[is_smooth]))
+
+        if neg_i_list:
+            ni = torch.cat(neg_i_list)[:num_pairs]
+            nj = torch.cat(neg_j_list)[:num_pairs]
+            sim_neg = (feat_flat[ni] * feat_flat[nj]).sum(dim=-1)
+            loss_neg = F.relu(sim_neg - margin).mean()
+            loss = loss + loss_neg
+            n_terms += 1
+
+    # -------------------------------------------------------------------
+    # Positive pairs: smooth pixel ↔ nearby smooth pixel (±2 px offset)
+    # Reinforces spatial coherence in 2D image space.
+    # -------------------------------------------------------------------
+    smooth_pixels = (~edge_mask).nonzero()   # [S, 2]
+    if smooth_pixels.shape[0] >= 2:
+        perm = torch.randperm(smooth_pixels.shape[0], device=device)[:num_pairs]
+        sp = smooth_pixels[perm]    # [S, 2]
+
+        offsets = torch.randint(-2, 3, (sp.shape[0], 2), device=device)
+        ny = (sp[:, 0] + offsets[:, 0]).clamp(0, H - 1)
+        nx = (sp[:, 1] + offsets[:, 1]).clamp(0, W - 1)
+
+        # Neighbor must also be smooth
+        is_smooth_j = ~edge_mask[ny, nx]
+        if is_smooth_j.sum() > 0:
+            pi = flat_idx(sp[is_smooth_j, 0], sp[is_smooth_j, 1])
+            pj = flat_idx(ny[is_smooth_j], nx[is_smooth_j])
+            sim_pos = (feat_flat[pi] * feat_flat[pj]).sum(dim=-1)
+            loss = loss + (1.0 - sim_pos).mean()
+            n_terms += 1
+
+    if n_terms == 0:
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+    return loss / n_terms
 
 
 # ---------------------------------------------------------------------------
