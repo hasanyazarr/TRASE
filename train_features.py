@@ -168,8 +168,9 @@ def training(dataset, opt, pipe, args):
             requires_grad=False,
         )
 
+    run_suffix = f"_{args.run_name}" if args.run_name else ""
     save_path = os.path.join(dataset.model_path, "point_cloud",
-                             f"iteration_{args.load_iteration}_features")
+                             f"iteration_{args.load_iteration}_features{run_suffix}")
     os.makedirs(save_path, exist_ok=True)
     gaussians.save_ply(os.path.join(save_path, "point_cloud.ply"))
     torch.save(mlp.state_dict(), os.path.join(save_path, "segmentation_mlp.pth"))
@@ -242,6 +243,10 @@ if __name__ == "__main__":
                         help="Max number of negative/positive pairs per render loss call")
     parser.add_argument("--render_margin", type=float, default=0.3,
                         help="Hinge margin for negative pairs in render loss")
+
+    # Run identification
+    parser.add_argument("--run_name", type=str, default="",
+                        help="Optional name suffix for the output folder (e.g. 'rw2_sw03')")
 
     args = parser.parse_args(sys.argv[1:])
 

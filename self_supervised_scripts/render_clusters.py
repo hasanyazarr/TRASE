@@ -57,9 +57,10 @@ def main(dataset, opt, pipe, args):
     # ------------------------------------------------------------------
     # Load saved features
     # ------------------------------------------------------------------
+    run_suffix = f"_{args.run_name}" if args.run_name else ""
     feat_ply = os.path.join(
         dataset.model_path, "point_cloud",
-        f"iteration_{args.load_iteration}_features", "point_cloud.ply"
+        f"iteration_{args.load_iteration}_features{run_suffix}", "point_cloud.ply"
     )
     print(f"Loading features from: {feat_ply}")
 
@@ -149,6 +150,8 @@ if __name__ == "__main__":
     parser.add_argument("--cluster_method", type=str, default="kmeans", choices=["kmeans", "dbscan"])
     parser.add_argument("--dbscan_eps", type=float, default=0.3)
     parser.add_argument("--dbscan_min_samples", type=int, default=10)
+    parser.add_argument("--run_name", type=str, default="",
+                        help="Must match the --run_name used during training")
 
     args = parser.parse_args(sys.argv[1:])
     safe_state(args.quiet if hasattr(args, 'quiet') else False)
