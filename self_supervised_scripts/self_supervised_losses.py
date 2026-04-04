@@ -146,6 +146,56 @@ def _motion_loss_knn(f, trajectories, positions, K, tau_pos, tau_neg, margin):
 
 
 # ---------------------------------------------------------------------------
+# Rendering coherence loss
+# ---------------------------------------------------------------------------
+
+def _image_gradient(x):
+    """
+    x: [C, H, W]
+    returns: [H, W] mean gradient magnitude across channels
+    """
+    dx = (x[:, :, 1:] - x[:, :, :-1]).abs().mean(dim=0)   # [H, W-1]
+    dy = (x[:, 1:, :] - x[:, :-1, :]).abs().mean(dim=0)   # [H-1, W]
+    dx = F.pad(dx, (0, 1))          # [H, W]
+    dy = F.pad(dy, (0, 0, 0, 1))   # [H, W]
+    return (dx + dy) / 2
+
+
+def rendering_coherence_loss(feat_map, rgb_map, depth_map=None,
+                              alpha=1.0, beta=0.5):
+    """
+    Edge-aware feature smoothness loss on 2D rendered maps.
+
+    Smooth regions (low color/depth gradient) → features should be similar.
+    Boundary regions (high gradient) → no penalty, features can differ.
+
+    Args:
+        feat_map:  [C, H, W]  rendered feature map  (differentiable, C=3)
+        rgb_map:   [3, H, W]  rendered RGB           (detached)
+        depth_map: [1, H, W]  rendered depth         (detached, optional)
+        alpha:     weight for RGB edge contribution
+        beta:      weight for depth edge contribution
+    """
+    device = feat_map.device
+
+    # --- Edge map ---
+    edge = alpha * _image_gradient(rgb_map.detach())
+    if depth_map is not None:
+        edge = edge + beta * _image_gradient(depth_map.detach())
+
+    w = torch.exp(-edge)   # [H, W]  — 1 in smooth regions, ~0 at boundaries
+
+    # --- Feature gradients ---
+    grad_x = (feat_map[:, :, 1:] - feat_map[:, :, :-1]) ** 2   # [C, H, W-1]
+    grad_y = (feat_map[:, 1:, :] - feat_map[:, :-1, :]) ** 2   # [C, H-1, W]
+
+    loss_x = (w[:, :-1] * grad_x.mean(dim=0)).mean()
+    loss_y = (w[:-1, :] * grad_y.mean(dim=0)).mean()
+
+    return (loss_x + loss_y) / 2
+
+
+# ---------------------------------------------------------------------------
 # Spatial coherence loss
 # ---------------------------------------------------------------------------
 

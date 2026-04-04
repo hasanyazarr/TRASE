@@ -10,7 +10,8 @@ from utils.general_utils import safe_state
 
 from self_supervised_scripts.gaussian_descriptor import GaussianDescriptor
 from self_supervised_scripts.segmentation_mlp import SegmentationMLP
-from self_supervised_scripts.self_supervised_losses import motion_affinity_loss, spatial_coherence_loss, MOTION_SAMPLING_MODES
+from self_supervised_scripts.self_supervised_losses import motion_affinity_loss, spatial_coherence_loss, rendering_coherence_loss, MOTION_SAMPLING_MODES
+from gaussian_renderer import render as gs_render
 
 
 def training(dataset, opt, pipe, args):
@@ -61,6 +62,16 @@ def training(dataset, opt, pipe, args):
 
     positions = gaussians._xyz.detach()
 
+    # Fixed random projection 32 → 3 for feature rendering (not trained)
+    proj = torch.nn.functional.normalize(
+        torch.randn(32, 3, device='cuda'), dim=0
+    )
+
+    # Background and training views for rendering coherence
+    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    background = torch.tensor(bg_color, dtype=torch.float32, device='cuda')
+    train_views = scene.getTrainCameras()
+
     progress = tqdm(range(1, args.feature_iterations + 1), desc="Feature Training")
     for iteration in progress:
 
@@ -90,16 +101,48 @@ def training(dataset, opt, pipe, args):
             sigma=args.spatial_sigma,
         )
 
-        loss = loss_motion + args.spatial_weight * loss_spatial
+        # Rendering coherence loss (every render_interval iterations)
+        loss_render = torch.tensor(0.0, device='cuda')
+        if args.render_weight > 0 and iteration % args.render_interval == 0:
+            view = train_views[torch.randint(len(train_views), (1,)).item()]
+            fid = view.fid
+            xyz = gaussians.get_xyz
+            time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
+
+            with torch.no_grad():
+                d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+                rgb_result = gs_render(view, gaussians, pipe, background,
+                                       d_xyz, d_rotation, d_scaling,
+                                       is_6dof=dataset.is_6dof)
+                rgb_map   = rgb_result["render"].detach()    # [3, H, W]
+                depth_map = rgb_result["depth"].detach()     # [1, H, W]
+
+            # Project features 32→3 (differentiable)
+            f_3 = f @ proj                                   # [N, 3]
+            f_min = f_3.min(dim=0).values
+            f_max = f_3.max(dim=0).values
+            f_3 = (f_3 - f_min) / (f_max - f_min + 1e-6)   # [N, 3] in [0,1]
+
+            feat_rendered = gs_render(view, gaussians, pipe, background,
+                                      d_xyz, d_rotation, d_scaling,
+                                      is_6dof=dataset.is_6dof,
+                                      override_color=f_3)["render"]   # [3, H, W]
+
+            loss_render = rendering_coherence_loss(
+                feat_rendered, rgb_map, depth_map,
+                alpha=args.render_alpha, beta=args.render_beta,
+            )
+
+        loss = loss_motion + args.spatial_weight * loss_spatial + args.render_weight * loss_render
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        progress.set_postfix({"loss": f"{loss.item():.4f}", "mot": f"{loss_motion.item():.4f}", "spa": f"{loss_spatial.item():.4f}"})
+        progress.set_postfix({"loss": f"{loss.item():.4f}", "mot": f"{loss_motion.item():.4f}", "spa": f"{loss_spatial.item():.4f}", "rnd": f"{loss_render.item():.4f}"})
 
         if iteration % args.log_interval == 0:
-            print(f"[iter {iteration:05d}] loss={loss.item():.4f}  mot={loss_motion.item():.4f}  spa={loss_spatial.item():.4f}")
+            print(f"[iter {iteration:05d}] loss={loss.item():.4f}  mot={loss_motion.item():.4f}  spa={loss_spatial.item():.4f}  rnd={loss_render.item():.4f}")
 
     # ------------------------------------------------------------------
     # 5. Save learned features into Gaussians and write .ply
@@ -168,6 +211,16 @@ if __name__ == "__main__":
                         help="Weight for spatial coherence loss (λ)")
     parser.add_argument("--spatial_sigma", type=float, default=None,
                         help="Gaussian bandwidth for spatial weights (default: spatial_radius/2)")
+
+    # Rendering coherence loss
+    parser.add_argument("--render_weight", type=float, default=1.0,
+                        help="Weight for rendering coherence loss (λ)")
+    parser.add_argument("--render_interval", type=int, default=10,
+                        help="Run rendering coherence every N iterations (expensive)")
+    parser.add_argument("--render_alpha", type=float, default=1.0,
+                        help="Edge weight for RGB gradient")
+    parser.add_argument("--render_beta", type=float, default=0.5,
+                        help="Edge weight for depth gradient")
 
     args = parser.parse_args(sys.argv[1:])
 
