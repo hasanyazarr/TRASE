@@ -15,6 +15,7 @@ data/technicolor/*
 sadg_example_models
 Mask-Benchmark
 output/
+outputs/
 test/
 qualitative_results
 assets/demos/*
