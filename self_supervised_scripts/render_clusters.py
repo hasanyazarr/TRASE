@@ -21,7 +21,7 @@ import numpy as np
 import torchvision
 from argparse import ArgumentParser
 from tqdm import tqdm
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN
 from sklearn.preprocessing import normalize
 
 from scene import Scene, GaussianModel, DeformModel
@@ -69,17 +69,37 @@ def main(dataset, opt, pipe, args):
     print(f"Features: {feats.shape}")
 
     # ------------------------------------------------------------------
-    # K-means clustering
+    # Clustering
     # ------------------------------------------------------------------
-    print(f"Running K-means (k={args.n_clusters})...")
     f_np = normalize(feats.cpu().numpy(), norm='l2')
-    km = KMeans(n_clusters=args.n_clusters, random_state=0, n_init='auto')
-    labels = km.fit_predict(f_np)
-    counts = np.bincount(labels, minlength=args.n_clusters)
-    print(f"Cluster sizes: {sorted(counts, reverse=True)}")
 
-    # Assign cluster colors [N, 3]
-    cluster_colors = CLUSTER_PALETTE[labels % len(CLUSTER_PALETTE)].cuda()  # [N, 3]
+    if args.cluster_method == 'dbscan':
+        print(f"Running DBSCAN (eps={args.dbscan_eps}, min_samples={args.dbscan_min_samples})...")
+        db = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, metric='euclidean', n_jobs=-1)
+        labels = db.fit_predict(f_np)
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_noise = np.sum(labels == -1)
+        print(f"Found {n_clusters} clusters, {n_noise} noise points ({100*n_noise/len(labels):.1f}%)")
+        counts = np.bincount(labels[labels >= 0], minlength=n_clusters)
+        print(f"Cluster sizes: {sorted(counts, reverse=True)}")
+        out_suffix = f"dbscan_eps{args.dbscan_eps}_min{args.dbscan_min_samples}"
+    else:
+        print(f"Running K-means (k={args.n_clusters})...")
+        km = KMeans(n_clusters=args.n_clusters, random_state=0, n_init='auto')
+        labels = km.fit_predict(f_np)
+        counts = np.bincount(labels, minlength=args.n_clusters)
+        print(f"Cluster sizes: {sorted(counts, reverse=True)}")
+        out_suffix = f"k{args.n_clusters}"
+
+    # Assign cluster colors — noise points (label=-1) → grey
+    noise_color = torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32)
+    colors_list = []
+    for lbl in labels:
+        if lbl == -1:
+            colors_list.append(noise_color)
+        else:
+            colors_list.append(CLUSTER_PALETTE[lbl % len(CLUSTER_PALETTE)])
+    cluster_colors = torch.stack(colors_list).cuda()  # [N, 3]
 
     # ------------------------------------------------------------------
     # Render
@@ -89,7 +109,7 @@ def main(dataset, opt, pipe, args):
 
     views = scene.getTrainCameras()
     out_dir = os.path.join(dataset.model_path, "cluster_renders",
-                           f"iteration_{args.load_iteration}_k{args.n_clusters}")
+                           f"iteration_{args.load_iteration}_{out_suffix}")
     os.makedirs(out_dir, exist_ok=True)
     print(f"Rendering {len(views)} views to: {out_dir}\n")
 
@@ -126,6 +146,9 @@ if __name__ == "__main__":
     parser.add_argument("--load_iteration", type=int, default=20000)
     parser.add_argument("--deform_path", type=str, default="")
     parser.add_argument("--n_clusters", type=int, default=8)
+    parser.add_argument("--cluster_method", type=str, default="kmeans", choices=["kmeans", "dbscan"])
+    parser.add_argument("--dbscan_eps", type=float, default=0.3)
+    parser.add_argument("--dbscan_min_samples", type=int, default=10)
 
     args = parser.parse_args(sys.argv[1:])
     safe_state(args.quiet if hasattr(args, 'quiet') else False)

@@ -16,6 +16,7 @@ sadg_example_models
 Mask-Benchmark
 output/
 outputs/
+cluster_renders/
 test/
 qualitative_results
 assets/demos/*
