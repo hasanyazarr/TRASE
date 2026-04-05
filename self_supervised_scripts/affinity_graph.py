@@ -62,11 +62,11 @@ class AffinityGraph:
         g = self.gaussians
 
         # ── 1. Opacity filter ─────────────────────────────────────────────
-        valid = g.get_opacity().squeeze(1) > self.opacity_thresh   # [N]
-        pos   = g.get_xyz()[valid]                                  # [N', 3]
-        scale = g.get_scaling()[valid]                              # [N', 3]  exp already applied
+        valid = g.get_opacity.squeeze(1) > self.opacity_thresh      # [N]
+        pos   = g.get_xyz[valid]                                    # [N', 3]
+        scale = g.get_scaling[valid]                                # [N', 3]  exp already applied
         color = g._features_dc[valid].squeeze(1)                   # [N', 3]  DC SH component
-        rot_q = g.get_rotation()[valid]                             # [N', 4]  normalized quaternions
+        rot_q = g.get_rotation[valid]                               # [N', 4]  normalized quaternions
 
         N = pos.shape[0]
         device = pos.device
