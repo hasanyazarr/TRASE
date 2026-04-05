@@ -47,11 +47,12 @@ from self_supervised_scripts.affinity_graph import AffinityGraph
 
 
 CLUSTER_PALETTE = torch.tensor([
+    [  0,   0,   0],  # index 0 — filtered-out / invalid Gaussians (black = invisible)
     [230,  25,  75], [ 60, 180,  75], [ 67,  99, 216], [255, 225,  25],
     [245, 130,  49], [145,  30, 180], [ 66, 212, 244], [240,  50, 230],
     [188, 246,  12], [250, 190, 212], [  0, 128, 128], [220, 190, 255],
     [154,  99,  36], [255, 250, 200], [128,   0,   0], [170, 255, 195],
-], dtype=torch.float32) / 255.0  # [P, 3]
+], dtype=torch.float32) / 255.0  # [P, 3]  — index 0 reserved for invalid
 
 
 # ── Spectral clustering ────────────────────────────────────────────────────────
@@ -93,23 +94,63 @@ def normalized_laplacian(W_sym):
     return A_norm
 
 
-def spectral_embed(A_norm, n_clusters):
+def spectral_embed(A_norm, n_clusters, eigengap_k=15):
     """
     Top-k eigenvectors of A_norm = bottom-k of L_sym.
     Uses ARPACK (shift-invert not needed for largest eigenvalues).
+
+    Always computes eigengap_k eigenvectors (≥ n_clusters) so we can
+    recommend the optimal k via the eigengap heuristic (Proposition 5).
     Returns [N, n_clusters] float32 array, row-normalised.
     """
-    print(f"  Computing top-{n_clusters} eigenvectors (ARPACK)...")
-    # which='LM': largest magnitude — these are the smooth eigenvectors
-    eigenvalues, eigenvectors = spla.eigsh(A_norm, k=n_clusters, which='LM')
-    # Sort by descending eigenvalue
+    k_compute = max(n_clusters, eigengap_k)
+    print(f"  Computing top-{k_compute} eigenvectors (ARPACK)...")
+    eigenvalues, eigenvectors = spla.eigsh(A_norm, k=k_compute, which='LM')
+
+    # Sort descending
     order = np.argsort(eigenvalues)[::-1]
-    eigenvectors = eigenvectors[:, order]
     eigenvalues  = eigenvalues[order]
-    print(f"  Eigenvalues: {eigenvalues.round(4).tolist()}")
-    # Row-normalise for k-means stability
-    eigenvectors = normalize(eigenvectors, norm='l2')
-    return eigenvectors.astype(np.float32)
+    eigenvectors = eigenvectors[:, order]
+
+    # Eigengap heuristic: largest drop between consecutive eigenvalues
+    gaps          = eigenvalues[:-1] - eigenvalues[1:]   # λ_i - λ_{i+1}
+    suggested_k   = int(np.argmax(gaps)) + 1             # gap before index → k clusters
+    print(f"  Eigenvalues (top-{k_compute}): {eigenvalues.round(4).tolist()}")
+    print(f"  Eigengaps:                     {gaps.round(4).tolist()}")
+    print(f"  Eigengap suggests k = {suggested_k}  (requested k = {n_clusters})")
+
+    # Save eigengap plot
+    _plot_eigengap(eigenvalues, gaps, suggested_k, n_clusters)
+
+    # Row-normalise the first n_clusters eigenvectors for k-means
+    embedding = normalize(eigenvectors[:, :n_clusters], norm='l2')
+    return embedding.astype(np.float32)
+
+
+def _plot_eigengap(eigenvalues, gaps, suggested_k, requested_k):
+    """Saved to /tmp for quick inspection — path printed to stdout."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    fig.suptitle("Eigengap Heuristic", fontsize=12)
+
+    ks = np.arange(1, len(eigenvalues) + 1)
+    ax1.plot(ks, eigenvalues, 'o-', markersize=4)
+    ax1.axvline(suggested_k, color='red',    linestyle='--', label=f'suggested k={suggested_k}')
+    ax1.axvline(requested_k, color='orange', linestyle='--', label=f'requested k={requested_k}')
+    ax1.set_xlabel('k'); ax1.set_ylabel('Eigenvalue'); ax1.set_title('Eigenvalues')
+    ax1.legend(fontsize=8)
+
+    gap_ks = np.arange(1, len(gaps) + 1)
+    ax2.bar(gap_ks, gaps, color='steelblue', alpha=0.8)
+    ax2.axvline(suggested_k, color='red',    linestyle='--', label=f'suggested k={suggested_k}')
+    ax2.axvline(requested_k, color='orange', linestyle='--', label=f'requested k={requested_k}')
+    ax2.set_xlabel('k'); ax2.set_ylabel('Gap (λ_k − λ_{k+1})'); ax2.set_title('Eigengaps')
+    ax2.legend(fontsize=8)
+
+    plt.tight_layout()
+    path = '/tmp/eigengap.png'
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"  Eigengap plot: {path}")
 
 
 def run_kmeans(embedding, n_clusters, seed=0):
@@ -273,10 +314,13 @@ def main(dataset, opt, pipe, args):
     # ── 5. K-means ───────────────────────────────────────────────────────
     labels_valid = run_kmeans(embedding, args.n_clusters)  # [N_valid]
 
-    # Map back to all N Gaussians — filtered-out Gaussians get label 0
+    # Map back to all N Gaussians.
+    # labels_valid is 0-indexed from KMeans → shift by +1 so valid clusters
+    # occupy indices 1..k. Index 0 is reserved for filtered-out Gaussians,
+    # which map to the black entry in CLUSTER_PALETTE and are invisible in renders.
     labels_full = np.zeros(N_total, dtype=np.int32)
     valid_np    = valid.cpu().numpy()
-    labels_full[valid_np] = labels_valid
+    labels_full[valid_np] = labels_valid + 1
 
     # ── 6. Save outputs ───────────────────────────────────────────────────
     out_dir = os.path.join(dataset.model_path, "spectral")
