@@ -114,8 +114,10 @@ class AffinityGraph:
             / (2 * self.sigma_scale ** 2)
         )
 
-        # ── 5. Final weight ───────────────────────────────────────────────
-        W = Apos * Acolor * Aorient * Ascale                        # [E]
+        # ── 5. Final weight (geometric mean) ─────────────────────────────
+        # Geometric mean instead of product to avoid collapse when any
+        # single component is low — each term contributes equally.
+        W = (Apos * Acolor * Aorient * Ascale) ** 0.25              # [E]
 
         if return_components:
             components = {

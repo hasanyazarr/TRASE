@@ -16,6 +16,7 @@ sadg_example_models
 Mask-Benchmark
 output/
 outputs/
+affinity_inspect/
 cluster_renders/
 test/
 qualitative_results

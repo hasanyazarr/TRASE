@@ -58,6 +58,18 @@ def main(dataset, opt, args):
           f"({100 * N_valid / N_total:.1f}%)")
     print(f"Edges: {E:,}  (avg {E / N_valid:.1f} per node)")
 
+    # ── Data-driven sigma diagnostics ─────────────────────────────────────
+    pos_all = gaussians.get_xyz[valid]
+    color_all = gaussians._features_dc[valid].squeeze(1)
+    i_idx, j_idx = edge_index[0], edge_index[1]
+
+    dists = ((pos_all[i_idx] - pos_all[j_idx]) ** 2).sum(dim=1).sqrt().cpu()
+    color_diffs = ((color_all[i_idx] - color_all[j_idx]) ** 2).sum(dim=1).sqrt().cpu()
+
+    print(f"\nSigma calibration hints (based on actual k-NN pairs):")
+    print(f"  k-NN pos dist : mean={dists.mean():.4f}  median={dists.median():.4f}  p95={dists.quantile(0.95):.4f}  → suggest sigma_pos ≈ {dists.median():.4f}")
+    print(f"  color diff    : mean={color_diffs.mean():.4f}  median={color_diffs.median():.4f}  p95={color_diffs.quantile(0.95):.4f}  → suggest sigma_color ≈ {color_diffs.median():.4f}")
+
     # ── Per-component statistics ──────────────────────────────────────────
     all_tensors = {**components, 'W': W}
     print(f"\n{'Component':<12} {'mean':>8} {'std':>8} {'min':>8} {'max':>8}  {'~0% (dead)':>12}  {'~1% (sat)':>12}")
@@ -166,7 +178,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--load_iteration",   type=int,   default=20000)
     parser.add_argument("--k",                type=int,   default=20)
-    parser.add_argument("--opacity_thresh",   type=float, default=0.1)
+    parser.add_argument("--opacity_thresh",   type=float, default=0.05)
     parser.add_argument("--sigma_pos",        type=float, default=0.1)
     parser.add_argument("--sigma_color",      type=float, default=0.3)
     parser.add_argument("--sigma_scale",      type=float, default=1.0)
