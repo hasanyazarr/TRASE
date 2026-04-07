@@ -101,6 +101,28 @@ def _eigsh_arpack(A_norm, k):
     return eigenvalues, eigenvectors
 
 
+def _eigsh_randomized(A_norm, k, n_iter=10, random_state=42):
+    """
+    Approximate top-k eigenvectors via randomized SVD (sklearn).
+    No new dependencies. Runs on CPU in ~5-30 seconds for 687k nodes.
+
+    For a symmetric PSD matrix A_norm:
+      top-k singular vectors == top-k eigenvectors
+      singular values         == eigenvalues (all ≥ 0)
+
+    n_iter=10 gives high-quality approximation (sklearn default is 4;
+    more iterations → better accuracy for clustered eigenvalues).
+    """
+    from sklearn.utils.extmath import randomized_svd
+    print(f"  Computing top-{k} eigenvectors (randomized SVD / CPU) ...")
+    # n_oversamples=20 (default 10) improves accuracy for clustered spectrum
+    U, S, _ = randomized_svd(
+        A_norm, n_components=k, n_iter=n_iter,
+        n_oversamples=20, random_state=random_state
+    )
+    return S, U   # (eigenvalues, eigenvectors)
+
+
 def _eigsh_lobpcg(A_norm, k, device='cuda'):
     """
     GPU solver: torch.lobpcg on a sparse-CSR matrix (no new dependencies).
@@ -172,10 +194,12 @@ def spectral_embed(A_norm, n_clusters, eigengap_k=15, solver='lobpcg'):
         eigenvalues, eigenvectors = _eigsh_lobpcg(A_norm, k_compute)
     elif solver == 'cupy':
         eigenvalues, eigenvectors = _eigsh_cupy(A_norm, k_compute)
+    elif solver == 'randomized':
+        eigenvalues, eigenvectors = _eigsh_randomized(A_norm, k_compute)
     elif solver == 'arpack':
         eigenvalues, eigenvectors = _eigsh_arpack(A_norm, k_compute)
     else:
-        raise ValueError(f"Unknown solver '{solver}'. Choose: lobpcg | cupy | arpack")
+        raise ValueError(f"Unknown solver '{solver}'. Choose: lobpcg | cupy | randomized | arpack")
 
     # Sort descending
     order = np.argsort(eigenvalues)[::-1]
@@ -433,7 +457,7 @@ if __name__ == "__main__":
     parser.add_argument("--sigma_color",       type=float, default=0.5160)
     parser.add_argument("--sigma_scale",       type=float, default=1.0)
     parser.add_argument("--solver",             type=str,   default="lobpcg",
-                        choices=["lobpcg", "cupy", "arpack"],
+                        choices=["lobpcg", "cupy", "randomized", "arpack"],
                         help="Eigensolver: lobpcg=GPU/no-new-deps (default), "
                              "cupy=GPU/needs cupy-cuda118, arpack=CPU/scipy")
     parser.add_argument("--no_render",         action="store_true",
