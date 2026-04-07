@@ -114,10 +114,13 @@ class AffinityGraph:
             / (2 * self.sigma_scale ** 2)
         )
 
-        # ── 5. Final weight (geometric mean) ─────────────────────────────
-        # Geometric mean instead of product to avoid collapse when any
-        # single component is low — each term contributes equally.
-        W = (Apos * Acolor * Aorient * Ascale) ** 0.25              # [E]
+        # ── 5. Final weight (geometric mean, Apos excluded) ──────────────
+        # Apos is excluded: the k-NN graph is built on position alone, so
+        # every edge already connects spatially close points → Apos ≈ 1.0
+        # for all edges by construction → zero discriminative signal.
+        # Spatial locality is already encoded in the graph topology.
+        # W = geometric mean of the three discriminative terms.
+        W = (Acolor * Aorient * Ascale) ** (1.0 / 3.0)              # [E]
 
         if return_components:
             components = {
