@@ -94,18 +94,88 @@ def normalized_laplacian(W_sym):
     return A_norm
 
 
-def spectral_embed(A_norm, n_clusters, eigengap_k=15):
+def _eigsh_arpack(A_norm, k):
+    """CPU fallback: ARPACK via scipy."""
+    print(f"  Computing top-{k} eigenvectors (ARPACK / CPU) ...")
+    eigenvalues, eigenvectors = spla.eigsh(A_norm, k=k, which='LM')
+    return eigenvalues, eigenvectors
+
+
+def _eigsh_lobpcg(A_norm, k, device='cuda'):
+    """
+    GPU solver: torch.lobpcg on a sparse-CSR matrix (no new dependencies).
+
+    Memory footprint for 687k nodes, k=15:
+      sparse matrix  ~112 MB  (14M edges × float32 × val+col)
+      eigvec buffers ~ 40 MB  (687k × 15 × float32)
+      LOBPCG work    ~160 MB  (≈4k buffer columns)
+      ─────────────────────────────
+      total          ~312 MB  (well within 32 GB V100)
+    """
+    print(f"  Computing top-{k} eigenvectors (torch.lobpcg / GPU) ...")
+    N = A_norm.shape[0]
+
+    # scipy CSR → torch sparse_csr on GPU
+    M    = A_norm.tocsr().astype(np.float32)
+    crow = torch.from_numpy(M.indptr.copy().astype(np.int64)).to(device)
+    col  = torch.from_numpy(M.indices.copy().astype(np.int64)).to(device)
+    val  = torch.from_numpy(M.data.copy().astype(np.float32)).to(device)
+    A_t  = torch.sparse_csr_tensor(crow, col, val, size=(N, N), device=device)
+
+    # Random initial guess (LOBPCG is sensitive to init; randn is fine)
+    X0 = torch.randn(N, k, dtype=torch.float32, device=device)
+
+    # largest=True → top-k eigenpairs of symmetric PSD A_norm
+    eigenvalues_t, eigenvectors_t = torch.lobpcg(
+        A_t, k=k, X=X0, largest=True, niter=1000, tol=1e-5
+    )
+
+    return eigenvalues_t.cpu().numpy(), eigenvectors_t.cpu().numpy()
+
+
+def _eigsh_cupy(A_norm, k):
+    """
+    GPU solver: cupy drop-in for scipy eigsh.
+    Requires: pip install cupy-cuda118   (match your CUDA version)
+    """
+    try:
+        import cupy as cp
+        import cupyx.scipy.sparse as cpsp
+        import cupyx.scipy.sparse.linalg as cpsla
+    except ImportError:
+        raise ImportError(
+            "cupy not found. Install with:  pip install cupy-cuda118\n"
+            "Or use --solver lobpcg (no new deps) or --solver arpack (CPU)."
+        )
+    print(f"  Computing top-{k} eigenvectors (cupyx eigsh / GPU) ...")
+    A_cp = cpsp.csr_matrix(A_norm.astype(np.float32))
+    eigenvalues, eigenvectors = cpsla.eigsh(A_cp, k=k, which='LM')
+    return eigenvalues, eigenvectors.get()   # move back to numpy
+
+
+def spectral_embed(A_norm, n_clusters, eigengap_k=15, solver='lobpcg'):
     """
     Top-k eigenvectors of A_norm = bottom-k of L_sym.
-    Uses ARPACK (shift-invert not needed for largest eigenvalues).
+
+    solver choices:
+      'lobpcg'  — torch.lobpcg on GPU (default, no new deps)
+      'cupy'    — cupyx.scipy eigsh on GPU (needs cupy-cuda118)
+      'arpack'  — scipy ARPACK on CPU (original, slowest)
 
     Always computes eigengap_k eigenvectors (≥ n_clusters) so we can
     recommend the optimal k via the eigengap heuristic (Proposition 5).
     Returns [N, n_clusters] float32 array, row-normalised.
     """
     k_compute = max(n_clusters, eigengap_k)
-    print(f"  Computing top-{k_compute} eigenvectors (ARPACK)...")
-    eigenvalues, eigenvectors = spla.eigsh(A_norm, k=k_compute, which='LM')
+
+    if solver == 'lobpcg':
+        eigenvalues, eigenvectors = _eigsh_lobpcg(A_norm, k_compute)
+    elif solver == 'cupy':
+        eigenvalues, eigenvectors = _eigsh_cupy(A_norm, k_compute)
+    elif solver == 'arpack':
+        eigenvalues, eigenvectors = _eigsh_arpack(A_norm, k_compute)
+    else:
+        raise ValueError(f"Unknown solver '{solver}'. Choose: lobpcg | cupy | arpack")
 
     # Sort descending
     order = np.argsort(eigenvalues)[::-1]
@@ -309,7 +379,7 @@ def main(dataset, opt, pipe, args):
     print(f"  Sparse matrix: {W_sym.shape}, nnz={W_sym.nnz:,}")
 
     # ── 4. Spectral embedding ─────────────────────────────────────────────
-    embedding = spectral_embed(A_norm, args.n_clusters)   # [N_valid, k]
+    embedding = spectral_embed(A_norm, args.n_clusters, solver=args.solver)  # [N_valid, k]
 
     # ── 5. K-means ───────────────────────────────────────────────────────
     labels_valid = run_kmeans(embedding, args.n_clusters)  # [N_valid]
@@ -362,6 +432,10 @@ if __name__ == "__main__":
     parser.add_argument("--sigma_pos",         type=float, default=0.0036)
     parser.add_argument("--sigma_color",       type=float, default=0.5160)
     parser.add_argument("--sigma_scale",       type=float, default=1.0)
+    parser.add_argument("--solver",             type=str,   default="lobpcg",
+                        choices=["lobpcg", "cupy", "arpack"],
+                        help="Eigensolver: lobpcg=GPU/no-new-deps (default), "
+                             "cupy=GPU/needs cupy-cuda118, arpack=CPU/scipy")
     parser.add_argument("--no_render",         action="store_true",
                         help="Skip rendering, only save labels and scatter")
 
