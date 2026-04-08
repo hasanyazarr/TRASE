@@ -155,10 +155,14 @@ def _eigsh_lobpcg(A_norm, k, device='cuda'):
     return eigenvalues_t.cpu().numpy(), eigenvectors_t.cpu().numpy()
 
 
-def _eigsh_cupy(A_norm, k):
+def _eigsh_cupy(A_norm, k, maxiter=3000, tol=1e-3):
     """
-    GPU solver: cupy drop-in for scipy eigsh.
+    GPU solver: cupy drop-in for scipy eigsh (ARPACK on GPU).
     Requires: pip install cupy-cuda118   (match your CUDA version)
+
+    maxiter/tol: safety nets to prevent infinite looping on near-flat spectra.
+    With power sharpening applied upstream, 3000 iterations is generous.
+    tol=1e-3 is coarser than default (1e-10) but sufficient for k-means input.
     """
     try:
         import cupy as cp
@@ -167,11 +171,12 @@ def _eigsh_cupy(A_norm, k):
     except ImportError:
         raise ImportError(
             "cupy not found. Install with:  pip install cupy-cuda118\n"
-            "Or use --solver lobpcg (no new deps) or --solver arpack (CPU)."
+            "Or use --solver arpack (CPU)."
         )
-    print(f"  Computing top-{k} eigenvectors (cupyx eigsh / GPU) ...")
+    print(f"  Computing top-{k} eigenvectors (cupyx eigsh / GPU, maxiter={maxiter}, tol={tol}) ...")
     A_cp = cpsp.csr_matrix(A_norm.astype(np.float32))
-    eigenvalues, eigenvectors = cpsla.eigsh(A_cp, k=k, which='LM')
+    eigenvalues, eigenvectors = cpsla.eigsh(A_cp, k=k, which='LM',
+                                            maxiter=maxiter, tol=tol)
     return eigenvalues, eigenvectors.get()   # move back to numpy
 
 
