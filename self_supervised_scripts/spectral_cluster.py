@@ -388,6 +388,7 @@ def main(dataset, opt, pipe, args):
         sigma_pos=args.sigma_pos,
         sigma_color=args.sigma_color,
         sigma_scale=args.sigma_scale,
+        power=args.power,
     )
     edge_index, W, valid = graph.build(return_components=False)
 
@@ -456,6 +457,8 @@ if __name__ == "__main__":
     parser.add_argument("--sigma_pos",         type=float, default=0.0036)
     parser.add_argument("--sigma_color",       type=float, default=0.5160)
     parser.add_argument("--sigma_scale",       type=float, default=1.0)
+    parser.add_argument("--power",             type=float, default=1.0,
+                        help="Sharpening exponent on W (p>1 boosts eigengap; try 4 or 8)")
     parser.add_argument("--solver",             type=str,   default="lobpcg",
                         choices=["lobpcg", "cupy", "randomized", "arpack"],
                         help="Eigensolver: lobpcg=GPU/no-new-deps (default), "

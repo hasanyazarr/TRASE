@@ -28,6 +28,7 @@ class AffinityGraph:
         sigma_pos: float = 0.1,
         sigma_color: float = 0.3,
         sigma_scale: float = 1.0,
+        power: float = 1.0,
     ):
         """
         Args:
@@ -37,6 +38,8 @@ class AffinityGraph:
             sigma_pos:      bandwidth for spatial proximity kernel
             sigma_color:    bandwidth for color similarity kernel
             sigma_scale:    bandwidth for scale ratio kernel
+            power:          sharpening exponent applied to W after geometric mean
+                            (p>1 amplifies contrast: weak edges → 0, strong → 1)
         """
         self.gaussians = gaussians
         self.k = k
@@ -44,6 +47,7 @@ class AffinityGraph:
         self.sigma_pos = sigma_pos
         self.sigma_color = sigma_color
         self.sigma_scale = sigma_scale
+        self.power = power
 
     @torch.no_grad()
     def build(self, return_components=False):
@@ -81,6 +85,9 @@ class AffinityGraph:
         v1    = F.normalize(v1, dim=1)
 
         # ── 3. k-NN graph in canonical space (GPU) ────────────────────────
+        # Graph topology is spatial (x,y,z) per the paper's theory.
+        # Object separation is handled by edge weights (Acolor, Aorient,
+        # Ascale), not by the graph topology.
         # torch_cluster.knn(x, y, k): for each point in y find k nearest in x
         # k+1 to account for self-loops, which are removed below
         edge_index = torch_knn(pos, pos, k=self.k + 1)             # [2, N'*(k+1)]
@@ -121,6 +128,13 @@ class AffinityGraph:
         # Spatial locality is already encoded in the graph topology.
         # W = geometric mean of the three discriminative terms.
         W = (Acolor * Aorient * Ascale) ** (1.0 / 3.0)              # [E]
+
+        # ── 6. Power sharpening (optional) ───────────────────────────────
+        # W^p amplifies contrast: strong edges (W≈0.9) survive, weak
+        # cross-cluster edges (W≈0.4) collapse toward 0, opening eigengap.
+        # Default p=1.0 is a no-op.
+        if self.power != 1.0:
+            W = W ** self.power
 
         if return_components:
             components = {

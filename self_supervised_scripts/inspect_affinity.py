@@ -49,6 +49,7 @@ def main(dataset, opt, args):
         sigma_pos=args.sigma_pos,
         sigma_color=args.sigma_color,
         sigma_scale=args.sigma_scale,
+        power=args.power,
     )
     edge_index, W, valid, components = graph.build(return_components=True)
 
@@ -72,18 +73,20 @@ def main(dataset, opt, args):
 
     # ── Per-component statistics ──────────────────────────────────────────
     all_tensors = {**components, 'W': W}
-    print(f"\n{'Component':<12} {'mean':>8} {'std':>8} {'min':>8} {'max':>8}  {'~0% (dead)':>12}  {'~1% (sat)':>12}")
-    print("-" * 78)
+    print(f"\n{'Component':<12} {'mean':>8} {'std':>8} {'p25':>8} {'p50':>8} {'p75':>8} {'p95':>8}  {'~0%':>8}  {'~1%':>8}")
+    print("-" * 90)
     for name, t in all_tensors.items():
         t_cpu = t.float().cpu()
         print(
             f"{name:<12} "
             f"{t_cpu.mean().item():>8.4f} "
             f"{t_cpu.std().item():>8.4f} "
-            f"{t_cpu.min().item():>8.4f} "
-            f"{t_cpu.max().item():>8.4f}  "
-            f"{(t_cpu < 0.05).float().mean().item() * 100:>10.1f}%  "
-            f"{(t_cpu > 0.95).float().mean().item() * 100:>10.1f}%"
+            f"{t_cpu.quantile(0.25).item():>8.4f} "
+            f"{t_cpu.quantile(0.50).item():>8.4f} "
+            f"{t_cpu.quantile(0.75).item():>8.4f} "
+            f"{t_cpu.quantile(0.95).item():>8.4f}  "
+            f"{(t_cpu < 0.05).float().mean().item() * 100:>6.1f}%  "
+            f"{(t_cpu > 0.95).float().mean().item() * 100:>6.1f}%"
         )
 
     # ── Plots ─────────────────────────────────────────────────────────────
@@ -182,6 +185,8 @@ if __name__ == "__main__":
     parser.add_argument("--sigma_pos",        type=float, default=0.1)
     parser.add_argument("--sigma_color",      type=float, default=0.3)
     parser.add_argument("--sigma_scale",      type=float, default=1.0)
+    parser.add_argument("--power",            type=float, default=1.0,
+                        help="Sharpening exponent on W (same as spectral_cluster.py --power)")
     parser.add_argument("--scatter_subsample",type=int,   default=50000,
                         help="Max Gaussians to plot in scatter (performance)")
 
