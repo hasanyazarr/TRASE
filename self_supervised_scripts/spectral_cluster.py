@@ -177,7 +177,7 @@ def _eigsh_cupy(A_norm, k, maxiter=3000, tol=1e-3):
     A_cp = cpsp.csr_matrix(A_norm.astype(np.float32))
     eigenvalues, eigenvectors = cpsla.eigsh(A_cp, k=k, which='LM',
                                             maxiter=maxiter, tol=tol)
-    return eigenvalues, eigenvectors.get()   # move back to numpy
+    return eigenvalues.get(), eigenvectors.get()   # move back to numpy
 
 
 def spectral_embed(A_norm, n_clusters, eigengap_k=15, solver='lobpcg'):
