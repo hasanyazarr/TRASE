@@ -175,7 +175,7 @@ def _eigsh_cupy(A_norm, k, maxiter=3000, tol=1e-3):
         )
     print(f"  Computing top-{k} eigenvectors (cupyx eigsh / GPU, maxiter={maxiter}, tol={tol}) ...")
     A_cp = cpsp.csr_matrix(A_norm.astype(np.float32))
-    eigenvalues, eigenvectors = cpsla.eigsh(A_cp, k=k, which='LM',
+    eigenvalues, eigenvectors = cpsla.eigsh(A_cp, k=k, which='LA',
                                             maxiter=maxiter, tol=tol)
     return eigenvalues.get(), eigenvectors.get()   # move back to numpy
 
